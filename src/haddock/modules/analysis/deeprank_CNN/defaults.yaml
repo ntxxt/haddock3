@@ -1,0 +1,25 @@
+chain1:
+  default: A
+  type: string
+  minchars: 1
+  maxchars: 1
+  title: ChainID 1 in complex
+  short: No short description yet
+  long: No long description yet
+  group: analysis
+  explevel: easy
+
+chain2:
+  default: B
+  type: string
+  minchars: 1
+  maxchars: 1
+  title: ChainID 2 in complex
+  short: No short description yet
+  long: No long description yet
+  group: analysis
+  explevel: easy
+
+output_dir
+
+
