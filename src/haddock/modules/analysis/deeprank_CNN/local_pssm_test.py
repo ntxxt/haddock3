@@ -1,8 +1,13 @@
 from mpi4py import MPI
 import os
+from time import time
+
+from mpi4py import MPI
+import os
 import json
 import requests
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 import h5py
@@ -15,7 +20,6 @@ from haddock.modules.analysis.deeprank_CNN.model_280619 import cnn_class
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
-
 #used to rank docking poses
 
 class CNN_score():
@@ -27,19 +31,13 @@ class CNN_score():
         self.pssm_path = os.path.join(pdb_source, 'pssm')
         
         for chainID in [self.chain1, self.chain2]:
-            self.write_pssm(chainID)
-            fpssm = [file for file in os.listdir(self.pssm_path) if f'._{chainID}'in file][0]
+            fpssm = [file for file in os.listdir(self.pssm_path) if f'{chainID}.'in file][0]
             pdbs = [file for file in os.listdir(self.pdb_source) if '.pdb' in file]
             for fpdb in pdbs:
                 self.write_mapped_pssm_pdb(fpssm, fpdb, chainID, self.pssm_path)
-    
+
     def write_pssm(self, chainID):
-        '''
-        query pssm database
-        '''
-        pdb_code = [f for f in os.listdir(self.pdb_source) if '.pdb' in f][0].split('-')[0]
-        #print(pdb_code)
-        #pdb_code = os.listdir(self.pdb_source)[0].split('_')[0]
+        pdb_code = os.listdir(self.pdb_source)[0].split('_')[0]
         url = f'https://3dcons.cnb.csic.es/pssm_json/{pdb_code}/{chainID}'
         pssm_dict = requests.get(url, verify=False).json()
         if pssm_dict is not None:
@@ -55,14 +53,12 @@ class CNN_score():
                 os.mkdir(self.pssm_path)
             with open(os.path.join(self.pssm_path, f'{pdb_code}_{chainID}.pssm'), 'w') as f:
                 f.write(header)
+                print('file generated')
         else:
             raise ValueError(
             "Please enter a valid pdb code and chainID")
 
     def get_pssm(self, fpssm):
-        '''
-        read pssm file
-        '''
         rule = tuple([str(i) for i in range(10)])
         pssm = []
         with open(os.path.join(self.pssm_path, fpssm), "r") as f:
@@ -79,21 +75,16 @@ class CNN_score():
         return pssm
 
     def seq_from_pssm(self, fpssm):
-        '''
-        get sequence from pssm
-        '''
         seqs = []
         res_index = []
         with open(os.path.join(self.pssm_path, fpssm), "r") as f:
             for line in f.readlines()[1:]:
                 seqs.append(line.split()[1])
                 res_index.append(line.split()[0])
+
         return seqs, res_index
 
     def seq_from_pdb(self, fpdb, chainID):
-        '''
-        get sequence from pdb
-        '''
         res_codes = [
             # 20 canonical amino acids
             ('CYS', 'C'), ('ASP', 'D'), ('SER', 'S'), ('GLN', 'Q'),
@@ -138,13 +129,11 @@ class CNN_score():
             if chainID not in chains:
                 raise ValueError(
                     "Chain `{}` NOT exist in PDB file '{}'".format(chainID, fpdb))
+
         return sequence, resID
 
     
     def get_aligned_sequences(self, pdb_seq, pssm_seq):
-        '''
-        align protein sequence
-        '''
         ali = pairwise2.align.globalxs(pdb_seq, pssm_seq, -2, -1)
         seq1_ali = np.array([i for i in ali[0][0]])
         seq2_ali = np.array([i for i in ali[0][1]])
@@ -152,10 +141,6 @@ class CNN_score():
         return seq1_ali, seq2_ali
 
     def write_mapped_pssm_pdb(self, fpssm, fpdb, chainID, pssm_path):
-        '''
-        solve protein numbering problem
-        adapted from pssmgen package
-        '''
         #pssmname = os.path.basename(fpssm)
         pdbname = os.path.basename(fpdb)
         pssm_seq, _= self.seq_from_pssm(fpssm)
@@ -205,12 +190,15 @@ class CNN_score():
         index_norm_nogappdb = index_norm[np.logical_not(index_gappdb)]
         resi_pdb = np.array(pdb_resn)[index_norm_nogappdb]
         resn_pdb = np.array(pdb_seq)[index_norm_nogappdb]
-        #IC part not solved! not calculated by the web server, use [-2:-1] for now
+        #pssm_out = np.concatenate((resi_pdb, resn_pdb, pssm_norm[:, :24], pssm_norm[:, -2:-1]), axis=1)
+        #pssm_out = np.concatenate((resi_pdb, resn_pdb, pssm_norm[:, :24], pssm_norm[:, -1:0]), axis=1)
+        #IC part not solved!
         pssm_out = np.concatenate((resi_pdb, resn_pdb, pssm_norm[:,:2], pssm_norm[:, 4:24], pssm_norm[:, -2:-1]), axis=1)
         pssm_out = np.concatenate((header, pssm_out))
 
+
         # write mapped pssm to file which is named with input PDB file name, chain ID and ".pdb.pssm"
-        fopssm = os.path.join(self.pssm_path, os.path.splitext(pdbname)[0] + "." + chainID.upper() + ".pssm")
+        fopssm = os.path.join(pssm_path, os.path.splitext(pdbname)[0] + "." + chainID.upper() + ".pssm")
 
         with open(fopssm, "w") as f:
             for i in pssm_out:
@@ -218,9 +206,8 @@ class CNN_score():
                 tmp2 = ["{:>4s}".format(j) for j in i[4:]]
                 f.write(" ".join(tmp1+tmp2) + "\n")
         
+        
     '''
-    #old local pssm generation script
-    #produce the exact same format as in deeprank
     def generate_pssm(self):
         gen = PSSM(work_dir=self.pdb_source)
         gen.configure(blast_exe='/trinity/login/xxu/software/ncbi-blast-2.13.0+/bin/psiblast',
@@ -235,16 +222,16 @@ class CNN_score():
     '''
 
     def create_database(self):
-        '''
-        create deeprank database
-        '''
         comm = MPI.COMM_WORLD
-        self.hdf_dir = os.path.join(self.output_dir, 'output.hdf5')
+        outdir = os.path.join(self.pdb_source, self.output_dir)
+        if not os.path.isdir(outdir):
+             os.mkdir(outdir)    
+        self.hdf_dir = os.path.join(outdir, 'v')
         database = DataGenerator(pdb_source= self.pdb_source, #path to the models  
                          pssm_source=self.pssm_path, #path to the pssm data
                          data_augmentation = None,
                          chain1=self.chain1, chain2=self.chain2,
-                         compute_features = ['deeprank.features.AtomicFeature', 'deeprank.features.FullPSSM','deeprank.features.PSSM_IC'
+                         compute_features = ['deeprank.features.FullPSSM','deeprank.features.PSSM_IC'
                          , 'deeprank.features.BSA', 'deeprank.features.ResidueDensity'],
                          hdf5=self.hdf_dir,mpi_comm=comm)
         database.create_database(prog_bar=True)
@@ -257,10 +244,9 @@ class CNN_score():
         database.map_features(grid_info,try_sparse=True, time=False, prog_bar=True)
 
     def test_CNN(self):
-        '''
-        apply pre-trained model
-        '''
         model_data = 'best_train_model.pt'
+        path = '/trinity/login/xxu/software/haddock3/src/haddock/modules/analysis/deeprank_CNN'
+        model_data = os.path.join(path, model_data)
         database = self.hdf_dir
         model = NeuralNet(database, 
                          cnn_class, 
@@ -285,18 +271,24 @@ class CNN_score():
         rank = np.asarray([i for i in range(1, len(mols)+1)])
         result = pd.DataFrame(np.vstack((rank, mols, preds, out)))
         result.index=['rank', 'pdb_name', 'predict_class', 'probility']
-        result.to_csv(os.path.join(self.output_dir, 'deeprank.out'), encoding='utf-8', index=Falseq)
+        result.to_csv(os.path.join(self.output_dir, 'deeprank.out'), encoding='utf-8', index=True)
+
 
 #test the class
 '''
-pdb_source = '/trinity/login/xxu/data/test_CNN/1E6E_2/pdb'
-outdir = '/trinity/login/xxu/data/test_CNN/1E6E_2/pdb/out'
+pdb_source = '/trinity/login/xxu/data/test_CNN/1E6E_4'
+outdir = '/trinity/login/xxu/data/test_CNN/1E6E_2/pdb/out_put'
 CNN = CNN_score(pdb_source=pdb_source, chain1='A', chain2='B', output_dir=outdir)
-#CNN.write_pssm()
+CNN.write_pssm()
 #CNN.generate_pssm()
 CNN.create_database()
 CNN.test_CNN()
 print(CNN.analysis_result())
 '''
 
-
+'''
+web server down
+path
+pssm_ic
+lots of output from deeprank
+'''
